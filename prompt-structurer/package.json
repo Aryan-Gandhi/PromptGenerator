@@ -1,0 +1,24 @@
+{
+  "name": "prompt-structurer",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --require ./scripts/setup-globals.cjs node_modules/vite/bin/vite.js",
+    "build": "node --require ./scripts/setup-globals.cjs node_modules/vite/bin/vite.js build"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0",
+    "@types/chrome": "^0.0.260",
+    "@types/react": "^18.2.67",
+    "@types/react-dom": "^18.2.22",
+    "@vitejs/plugin-react": "^3.1.0",
+    "typescript": "~5.4.5",
+    "vite": "^4.5.2",
+    "vite-tsconfig-paths": "^4.2.0"
+  }
+}

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node --require ./scripts/setup-globals.cjs node_modules/vite/bin/vite.js",
-    "build": "node --require ./scripts/setup-globals.cjs node_modules/vite/bin/vite.js build"
+    "build": "node --require ./scripts/setup-globals.cjs node_modules/vite/bin/vite.js build",
+    "test": "NODE_OPTIONS=\"--require=./scripts/setup-globals.cjs\" vitest run",
+    "test:watch": "NODE_OPTIONS=\"--require=./scripts/setup-globals.cjs\" vitest watch"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -19,6 +21,7 @@
     "@vitejs/plugin-react": "^3.1.0",
     "typescript": "~5.4.5",
     "vite": "^4.5.2",
-    "vite-tsconfig-paths": "^4.2.0"
+    "vite-tsconfig-paths": "^4.2.0",
+    "vitest": "^1.6.0"
   }
 }

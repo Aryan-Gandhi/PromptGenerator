@@ -1,0 +1,10 @@
+name = "prompt-transform-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+[vars]
+# Optional default model override; can be changed at deploy time.
+DEFAULT_MODEL = "gpt-4o-mini"
+
+[observability]
+enabled = true

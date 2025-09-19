@@ -1,0 +1,13 @@
+{
+  "name": "prompt-structurer-monorepo",
+  "private": true,
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "dev": "bash scripts/dev.sh",
+    "deploy": "bash scripts/deploy.sh",
+    "build:extension": "npm --prefix prompt-structurer run build",
+    "deploy:worker": "npm --prefix prompt-transform-worker run deploy",
+    "dev:worker": "npm --prefix prompt-transform-worker run dev",
+    "test": "npm --prefix prompt-structurer run test && npm --prefix prompt-transform-worker run test"
+  }
+}

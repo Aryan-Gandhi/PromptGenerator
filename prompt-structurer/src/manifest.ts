@@ -2,12 +2,23 @@ import { defineManifest } from "@crxjs/vite-plugin";
 
 export default defineManifest({
   manifest_version: 3,
-  name: "Prompt Structurer (MVP - ChatGPT)",
+  name: "PromptGear for ChatGPT",
   version: "0.0.1",
-  description: "Takes a raw prompt, structures it, and inserts it into ChatGPT.",
+  description: "Crafts structured prompts and drops them straight into ChatGPT.",
+  icons: {
+    16: "icons/logo-16.png",
+    32: "icons/logo-32.png",
+    48: "icons/logo-48.png",
+    128: "icons/logo-128.png"
+  },
   action: {
     default_popup: "src/popup.html",
-    default_title: "Prompt Structurer"
+    default_title: "PromptGear",
+    default_icon: {
+      16: "icons/logo-16.png",
+      32: "icons/logo-32.png",
+      48: "icons/logo-48.png"
+    }
   },
   permissions: ["activeTab"],
   content_scripts: [

@@ -102,6 +102,22 @@ function applyValue(target: InputTarget, value: string) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === "FETCH_CURRENT_TEXT") {
+    const target = findInput();
+    let text = "";
+    if (target instanceof HTMLTextAreaElement) {
+      text = target.value;
+    } else if (target instanceof HTMLElement) {
+      text = target.textContent ?? "";
+    }
+    try {
+      sendResponse({ ok: !!target, text });
+    } catch (error) {
+      console.warn(DEBUG_PREFIX, "failed to send fetch response", error);
+    }
+    return true;
+  }
+
   if (msg?.type !== "INJECT_TEXT") return;
 
   console.log(DEBUG_PREFIX, "received message", msg);

@@ -1,21 +1,87 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { TRANSFORM_ENDPOINT, DEFAULT_MODEL } from "../config";
 import { basicTransform } from "../transformer/basic";
 
 type InjectResponse = { ok: true } | { ok: false; error?: string } | undefined;
 
+type StatusTone = "info" | "success" | "error";
+
+type StatusMessage = {
+  tone: StatusTone;
+  message: string;
+};
+
+type ProgressState = "pending" | "active" | "done" | "error";
+
+type ProgressStep = {
+  id: string;
+  label: string;
+  state: ProgressState;
+};
+
 export default function Popup() {
   const [raw, setRaw] = useState("");
   const [out, setOut] = useState("");
   const [isTransforming, setIsTransforming] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<StatusMessage | null>(null);
+  const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!chrome?.tabs?.query) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (cancelled) return;
+
+      const tabId = tabs[0]?.id;
+      if (!tabId) {
+        setStatus((prev) => prev ?? {
+          tone: "info",
+          message: "Open a ChatGPT tab so we can prefill this popup."
+        });
+        return;
+      }
+
+      chrome.tabs.sendMessage(
+        tabId,
+        { type: "FETCH_CURRENT_TEXT" },
+        (response: { ok?: boolean; text?: string } | undefined) => {
+          if (cancelled) return;
+
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError) {
+            console.warn("Prompt Structurer: unable to fetch existing text", runtimeError);
+            setStatus((prev) => prev ?? {
+              tone: "info",
+              message: "Reload ChatGPT so the extension can read the current input."
+            });
+            return;
+          }
+
+          if (response?.ok && typeof response.text === "string" && response.text.trim()) {
+            setRaw((current) => (current ? current : response.text ?? ""));
+          }
+        }
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const runTransform = useCallback(
     async (silent = false) => {
       const trimmed = raw.trim();
       if (!trimmed) {
         if (!silent) {
-          setStatus("Enter a prompt first.");
+          setStatus({ tone: "info", message: "Enter a prompt first." });
+          setProgressSteps([]);
         }
         setOut("");
         return "";
@@ -23,10 +89,29 @@ export default function Popup() {
 
       setIsTransforming(true);
       if (!silent) {
-        setStatus("Transforming via LLM…");
+        setStatus({ tone: "info", message: "Starting transform…" });
+        setProgressSteps([
+          { id: "prepare", label: "Preparing prompt", state: "active" },
+          { id: "request", label: "Contacting transformer service", state: "pending" },
+          { id: "result", label: "Formatting structured prompt", state: "pending" }
+        ]);
       }
 
       try {
+        if (!silent) {
+          setProgressSteps((steps) =>
+            steps.map((step) => {
+              if (step.id === "prepare") {
+                return { ...step, state: "done" };
+              }
+              if (step.id === "request") {
+                return { ...step, state: "active" };
+              }
+              return step;
+            })
+          );
+        }
+
         const response = await fetch(TRANSFORM_ENDPOINT, {
           method: "POST",
           headers: {
@@ -38,6 +123,20 @@ export default function Popup() {
             model: DEFAULT_MODEL
           })
         });
+
+        if (!silent) {
+          setProgressSteps((steps) =>
+            steps.map((step) => {
+              if (step.id === "request") {
+                return { ...step, state: "done" };
+              }
+              if (step.id === "result") {
+                return { ...step, state: "active" };
+              }
+              return step;
+            })
+          );
+        }
 
         const data = (await response.json().catch(() => null)) as
           | {
@@ -58,7 +157,12 @@ export default function Popup() {
         if (!silent) {
           const model = data.model ?? DEFAULT_MODEL;
           const mockSuffix = data.mocked ? " (mock)" : "";
-          setStatus(`Transformed with ${model}${mockSuffix}.`);
+          setProgressSteps((steps) =>
+            steps.map((step) =>
+              step.id === "result" ? { ...step, state: "done" } : step
+            )
+          );
+          setStatus({ tone: "success", message: `Transformed with ${model}${mockSuffix}.` });
         }
         return data.structuredPrompt;
       } catch (error) {
@@ -66,8 +170,15 @@ export default function Popup() {
         const fallback = basicTransform(trimmed);
         setOut(fallback);
         if (!silent) {
+          setProgressSteps((steps) =>
+            steps.map((step) =>
+              step.state === "active" || step.state === "pending"
+                ? { ...step, state: "error" }
+                : step
+            )
+          );
           const message = error instanceof Error ? error.message : "LLM transform failed";
-          setStatus(`${message}. Using rule-based fallback.`);
+          setStatus({ tone: "error", message: `${message}. Using rule-based fallback.` });
         }
         return fallback;
       } finally {
@@ -85,16 +196,17 @@ export default function Popup() {
 
   const insert = async () => {
     setStatus(null);
+    setProgressSteps([]);
     const payload = out || (await runTransform(true));
     if (!payload) {
-      setStatus("Nothing to insert.");
+      setStatus({ tone: "info", message: "Nothing to insert." });
       return;
     }
 
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tabId = tabs[0]?.id;
       if (!tabId) {
-        setStatus("Could not find the active tab.");
+        setStatus({ tone: "error", message: "Could not find the active tab." });
         return;
       }
 
@@ -104,17 +216,17 @@ export default function Popup() {
       }, (response: InjectResponse) => {
         const err = chrome.runtime.lastError;
         if (err) {
-          setStatus(err.message || "Failed to contact the page.");
+          setStatus({ tone: "error", message: err.message || "Failed to contact the page." });
           return;
         }
         if (!response) {
-          setStatus("No response from page (reload chatgpt.com).");
+          setStatus({ tone: "error", message: "No response from page (reload chatgpt.com)." });
           return;
         }
         if (response.ok) {
-          setStatus("Inserted into ChatGPT.");
+          setStatus({ tone: "success", message: "Inserted into ChatGPT." });
         } else {
-          setStatus(response.error ?? "Page reported an error.");
+          setStatus({ tone: "error", message: response.error ?? "Page reported an error." });
         }
       });
     });
@@ -148,10 +260,54 @@ export default function Popup() {
         <div
           style={{
             marginTop: 8,
-            color: status.startsWith("Inserted") || status.startsWith("Transformed") ? "green" : "#dc2626"
+            color:
+              status.tone === "success"
+                ? "#15803d"
+                : status.tone === "error"
+                ? "#dc2626"
+                : "#1f2937"
           }}
         >
-          {status}
+          {status.message}
+        </div>
+      )}
+      {progressSteps.length > 0 && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: 8,
+            background: "#f3f4f6",
+            borderRadius: 6,
+            border: "1px solid #e5e7eb",
+            fontSize: 12,
+            lineHeight: 1.5
+          }}
+        >
+          {progressSteps.map((step) => {
+            const prefix = step.state === "done"
+              ? "[x]"
+              : step.state === "active"
+              ? "[-]"
+              : step.state === "error"
+              ? "[!]"
+              : "[ ]";
+            const color = step.state === "error"
+              ? "#dc2626"
+              : step.state === "done"
+              ? "#15803d"
+              : step.state === "active"
+              ? "#1d4ed8"
+              : "#4b5563";
+            return (
+              <div
+                key={step.id}
+                style={{ display: "flex", alignItems: "center", gap: 8, color }}
+              >
+                <span style={{ fontFamily: "monospace", width: 24 }}>{prefix}</span>
+                <span>{step.label}</span>
+              </div>
+            );
+          })}
         </div>
       )}
       {out && (

@@ -27,5 +27,17 @@ export default defineManifest({
       js: ["src/content.ts"],
       run_at: "document_idle"
     }
+  ],
+  web_accessible_resources: [
+    {
+      resources: [
+        "src/popup.html",
+        "icons/logo-16.png",
+        "icons/logo-32.png",
+        "icons/logo-48.png",
+        "icons/logo-128.png"
+      ],
+      matches: ["*://chat.openai.com/*", "*://chatgpt.com/*"]
+    }
   ]
 });

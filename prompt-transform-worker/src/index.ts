@@ -2,6 +2,7 @@ export interface Env {
   OPENAI_API_KEY: string;
   DEFAULT_MODEL?: string;
   MOCK_TRANSFORM?: string;
+  ALLOWED_ORIGINS?: string;
 }
 
 type TransformBody = {
@@ -24,11 +25,26 @@ type OpenAIResponsesResult = {
   };
 };
 
+type CachedTransformRecord = {
+  structuredPrompt: string;
+  model: string;
+  usage?: number | null;
+  mocked?: boolean;
+  cachedAt: number;
+};
+
 const DEFAULT_MODEL = "gpt-4o-mini";
-const ALLOWED_ORIGIN = "*";
+const CACHE_TTL_SECONDS = 60 * 60 * 24 * 15; // 15 days
+const CACHE_CACHE_KEY_PREFIX = "https://promptgear-cache.internal/transform/";
+const OPENAI_TIMEOUT_MS = 25000;
+const OPENAI_TIMEOUT_STEP_MS = 5000;
+const INITIAL_BACKOFF_MS = 400;
+const MAX_BACKOFF_MS = 6000;
+const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
+const NO_ORIGIN_TOKEN = "<no-origin>";
 const DEBUG_PREFIX = "Prompt Transform Worker:";
 const MAX_OPENAI_RETRIES = 2;
-const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 524]);
 let lastSuccessfulTransform: number | null = null;
 let lastErrorRecord: { timestamp: number; message: string; status?: number } | null = null;
 
@@ -124,6 +140,53 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const textEncoder = new TextEncoder();
+
+async function buildCacheKey(prompt: string, mode: string | undefined, model: string): Promise<string> {
+  const raw = JSON.stringify({ prompt, mode: mode ?? null, model });
+  const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(raw));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function cacheRequestForKey(key: string): Request {
+  return new Request(`${CACHE_CACHE_KEY_PREFIX}${key}`, {
+    method: "GET"
+  });
+}
+
+async function readCachedTransform(key: string): Promise<CachedTransformRecord | null> {
+  try {
+    const match = await caches.default.match(cacheRequestForKey(key));
+    if (!match) {
+      return null;
+    }
+    const data = (await match.json()) as CachedTransformRecord;
+    if (!data || typeof data.structuredPrompt !== "string") {
+      return null;
+    }
+    return data;
+  } catch (error) {
+    console.warn(DEBUG_PREFIX, "failed to read cache", error);
+    return null;
+  }
+}
+
+async function writeCachedTransform(key: string, record: CachedTransformRecord): Promise<void> {
+  try {
+    const response = new Response(JSON.stringify(record), {
+      headers: {
+        "cache-control": `max-age=${CACHE_TTL_SECONDS}`,
+        "content-type": "application/json"
+      }
+    });
+    await caches.default.put(cacheRequestForKey(key), response);
+  } catch (error) {
+    console.warn(DEBUG_PREFIX, "failed to write cache", error);
+  }
+}
+
 class OpenAIRequestError extends Error {
   status: number;
   body: string;
@@ -148,23 +211,87 @@ function parseErrorBody(body: string): unknown {
   }
 }
 
-function withCorsHeaders(init: ResponseInit = {}): ResponseInit {
+function parseAllowedOrigins(env: Env): Set<string> {
+  const raw = env.ALLOWED_ORIGINS ?? "";
+  if (!raw.trim()) {
+    return new Set();
+  }
+  return new Set(
+    raw
+      .split(/[,\s]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+}
+
+type CorsResolution = {
+  allowed: boolean;
+  originHeader: string | null;
+  vary: boolean;
+};
+
+function resolveCors(origin: string | null, allowedOrigins: Set<string>): CorsResolution {
+  if (allowedOrigins.size === 0) {
+    return { allowed: false, originHeader: null, vary: true };
+  }
+
+  if (allowedOrigins.has("*")) {
+    return {
+      allowed: true,
+      originHeader: origin ?? "*",
+      vary: true
+    };
+  }
+
+  if (!origin) {
+    return {
+      allowed: allowedOrigins.has(NO_ORIGIN_TOKEN),
+      originHeader: null,
+      vary: true
+    };
+  }
+
+  if (allowedOrigins.has(origin)) {
+    return { allowed: true, originHeader: origin, vary: true };
+  }
+
+  for (const candidate of allowedOrigins) {
+    if (candidate.endsWith("*") && candidate !== "*") {
+      const prefix = candidate.slice(0, -1);
+      if (origin.startsWith(prefix)) {
+        return { allowed: true, originHeader: origin, vary: true };
+      }
+    }
+  }
+
+  return { allowed: false, originHeader: null, vary: true };
+}
+
+function withCorsHeaders(origin: string | null, init: ResponseInit = {}, vary = true): ResponseInit {
   const headers = new Headers(init.headers);
-  headers.set("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+  if (origin) {
+    headers.set("Access-Control-Allow-Origin", origin);
+  }
   headers.set("Access-Control-Allow-Headers", "content-type, authorization");
   headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+  if (vary) {
+    headers.append("Vary", "Origin");
+  }
   return { ...init, headers };
 }
 
-function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
-  const responseInit = withCorsHeaders(init);
+function jsonResponse(body: unknown, init: ResponseInit = {}, cors?: CorsResolution): Response {
+  const responseInit = withCorsHeaders(cors?.originHeader ?? null, init, cors?.vary ?? true);
   const headers = new Headers(responseInit.headers);
   headers.set("content-type", "application/json");
   return new Response(JSON.stringify(body), { ...responseInit, headers });
 }
 
-function handleOptions(): Response {
-  return new Response(null, withCorsHeaders({ status: 204 }));
+function handleOptions(cors: CorsResolution): Response {
+  if (!cors.allowed) {
+    return new Response(null, { status: 403 });
+  }
+  return new Response(null, withCorsHeaders(cors.originHeader, { status: 204 }, cors.vary));
 }
 
 function buildHealthPayload(env: Env): { payload: Record<string, unknown>; status: number } {
@@ -219,28 +346,42 @@ async function callOpenAI(prompt: string, mode: string | undefined, model: strin
   };
 
   let attempt = 0;
-  let backoffMs = 300;
+  let backoffMs = INITIAL_BACKOFF_MS;
   let response: Response | null = null;
 
   while (attempt <= MAX_OPENAI_RETRIES) {
+    const attemptTimeoutMs = OPENAI_TIMEOUT_MS + attempt * OPENAI_TIMEOUT_STEP_MS;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs);
     try {
-      response = await fetch("https://api.openai.com/v1/responses", {
+      response = await fetch(OPENAI_ENDPOINT, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           Authorization: `Bearer ${env.OPENAI_API_KEY}`
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: controller.signal
       });
     } catch (networkError) {
-      const message = networkError instanceof Error ? networkError.message : "Network error";
-      if (attempt < MAX_OPENAI_RETRIES && shouldRetry(0)) {
-        await sleep(backoffMs);
-        backoffMs = Math.min(backoffMs * 2, 4000);
+      clearTimeout(timeout);
+      const isAbortError = networkError instanceof Error && networkError.name === "AbortError";
+      const status = isAbortError ? 408 : 0;
+      const message = isAbortError
+        ? `OpenAI request timed out after ${attemptTimeoutMs}ms`
+        : networkError instanceof Error
+        ? networkError.message
+        : "Network error";
+      if (attempt < MAX_OPENAI_RETRIES && shouldRetry(status)) {
+        const delay = Math.min(backoffMs, MAX_BACKOFF_MS) + Math.random() * 150;
+        await sleep(delay);
+        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
         attempt += 1;
         continue;
       }
-      throw new OpenAIRequestError(0, message, message);
+      throw new OpenAIRequestError(status, message, message);
+    } finally {
+      clearTimeout(timeout);
     }
 
     if (response.ok) {
@@ -250,15 +391,15 @@ async function callOpenAI(prompt: string, mode: string | undefined, model: strin
     const errorText = await response.text();
     if (attempt < MAX_OPENAI_RETRIES && shouldRetry(response.status)) {
       const retryAfter = response.headers.get("retry-after");
-      let delay = backoffMs;
+      let delay = Math.min(backoffMs, MAX_BACKOFF_MS);
       if (retryAfter) {
         const retryAfterSeconds = Number(retryAfter);
         if (!Number.isNaN(retryAfterSeconds)) {
           delay = Math.max(retryAfterSeconds * 1000, delay);
         }
       }
-      await sleep(Math.min(delay, 5000));
-      backoffMs = Math.min(backoffMs * 2, 6000);
+      await sleep(Math.min(delay + Math.random() * 200, MAX_BACKOFF_MS));
+      backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
       attempt += 1;
       continue;
     }
@@ -310,34 +451,42 @@ export { isMockEnabled, buildMockStructuredPrompt };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const allowedOrigins = parseAllowedOrigins(env);
+    const cors = resolveCors(request.headers.get("Origin"), allowedOrigins);
+
     if (request.method === "OPTIONS") {
-      return handleOptions();
+      return handleOptions(cors);
     }
 
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       const { payload, status } = buildHealthPayload(env);
-      return jsonResponse(payload, { status });
+      return jsonResponse(payload, { status }, cors);
     }
 
     if (url.pathname !== "/transform") {
-      return jsonResponse({ error: "Not found" }, { status: 404 });
+      return jsonResponse({ error: "Not found" }, { status: 404 }, cors);
     }
 
     if (request.method !== "POST") {
-      return jsonResponse({ error: "Method not allowed" }, { status: 405 });
+      return jsonResponse({ error: "Method not allowed" }, { status: 405 }, cors);
+    }
+
+    if (!cors.allowed) {
+      console.warn(DEBUG_PREFIX, "blocked request from origin", request.headers.get("Origin") ?? "<no-origin>");
+      return jsonResponse({ error: "Origin not allowed" }, { status: 403 }, cors);
     }
 
     let body: TransformBody;
     try {
       body = (await request.json()) as TransformBody;
     } catch (error) {
-      return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+      return jsonResponse({ error: "Invalid JSON body" }, { status: 400 }, cors);
     }
 
     const rawPrompt = body.prompt?.trim();
     if (!rawPrompt) {
-      return jsonResponse({ error: "Missing required field: prompt" }, { status: 400 });
+      return jsonResponse({ error: "Missing required field: prompt" }, { status: 400 }, cors);
     }
 
     const model = body.model ?? env.DEFAULT_MODEL ?? DEFAULT_MODEL;
@@ -351,18 +500,37 @@ export default {
         model,
         usage: { totalTokens: null },
         mocked: true
-      });
+      }, {}, cors);
     }
 
     try {
+      const cacheKey = await buildCacheKey(rawPrompt, body.mode, model);
+      const cached = await readCachedTransform(cacheKey);
+      if (cached) {
+        lastSuccessfulTransform = Date.now();
+        lastErrorRecord = null;
+        return jsonResponse({
+          structuredPrompt: cached.structuredPrompt,
+          model: cached.model ?? model,
+          usage: { totalTokens: cached.usage ?? null },
+          cached: true
+        }, {}, cors);
+      }
+
       const result = await callOpenAI(rawPrompt, body.mode, model, env);
+      await writeCachedTransform(cacheKey, {
+        structuredPrompt: result.structuredPrompt,
+        model,
+        usage: result.usage ?? null,
+        cachedAt: Date.now()
+      });
       lastSuccessfulTransform = Date.now();
       lastErrorRecord = null;
       return jsonResponse({
         structuredPrompt: result.structuredPrompt,
         model,
         usage: { totalTokens: result.usage ?? null }
-      });
+      }, {}, cors);
     } catch (error) {
       console.error(DEBUG_PREFIX, "transform failed", error);
 
@@ -405,7 +573,7 @@ export default {
         responsePayload.details = details;
       }
 
-      return jsonResponse(responsePayload, { status });
+      return jsonResponse(responsePayload, { status }, cors);
     }
   }
 };

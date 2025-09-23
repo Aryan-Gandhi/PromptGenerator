@@ -5,6 +5,8 @@ compatibility_date = "2024-12-01"
 [vars]
 # Optional default model override; can be changed at deploy time.
 DEFAULT_MODEL = "gpt-4o-mini"
+# Comma separated; replace the placeholder extension ID with your published one.
+ALLOWED_ORIGINS = "chrome-extension://iilooaggclinecfibpfnfljipidjjbcd"
 
 [observability]
 enabled = true

@@ -11,6 +11,8 @@ let detachPanelMessageListener: (() => void) | null = null;
 let detachPositionListener: (() => void) | null = null;
 let savedTopPx: number | null = null;
 let savedHasCustomPosition = false;
+const CONTEXT_CHAR_LIMIT = 2000;
+const MAX_CONTEXT_TURNS = 6;
 
 const INPUT_SELECTORS = [
   '[contenteditable="true"][data-projection-id]',
@@ -112,7 +114,120 @@ function applyValue(target: InputTarget, value: string) {
   }
 }
 
+function getConversationId(): string {
+  const path = window.location.pathname;
+  const match = path.match(/\/c\/([^/]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  const segments = path.split("/").filter(Boolean);
+  if (segments.length > 0) {
+    return segments[segments.length - 1];
+  }
+  return window.location.href;
+}
+
+function normalizeWhitespace(value: string): string {
+  return value
+    .replace(/\u00a0/g, " ")
+    .replace(/[\t ]+/g, " ")
+    .replace(/\s*\n\s*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function collectConversationContext(limit = CONTEXT_CHAR_LIMIT): { context: string; turns: number } {
+  const turnNodes = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"]'));
+  if (!turnNodes.length) {
+    return { context: "", turns: 0 };
+  }
+
+  const recent = turnNodes.slice(-MAX_CONTEXT_TURNS);
+  const blocks: string[] = [];
+  let used = 0;
+  let turns = 0;
+
+  for (const node of recent) {
+    let role = "assistant";
+    const testId = node.getAttribute("data-testid") ?? "";
+    if (testId.includes("user")) {
+      role = "user";
+    } else if (testId.includes("assistant")) {
+      role = "assistant";
+    }
+
+    const roleAttribution = node.querySelector('[data-message-author-role]');
+    const roleLabel = roleAttribution?.getAttribute("data-message-author-role") ?? role;
+
+    const messageNodes = node.querySelectorAll('[data-message-author-role]');
+    const textParts: string[] = [];
+    if (messageNodes.length) {
+      messageNodes.forEach((entry) => {
+        const text = normalizeWhitespace(entry.textContent ?? "");
+        if (text) {
+          textParts.push(text);
+        }
+      });
+    } else {
+      const fallbackText = normalizeWhitespace(node.textContent ?? "");
+      if (fallbackText) {
+        textParts.push(fallbackText);
+      }
+    }
+
+    const combined = textParts.join("\n\n").trim();
+    if (!combined) {
+      continue;
+    }
+
+    const friendlyRole = roleLabel.toLowerCase().startsWith("user")
+      ? "User"
+      : roleLabel.toLowerCase().startsWith("assistant")
+      ? "Assistant"
+      : roleLabel.charAt(0).toUpperCase() + roleLabel.slice(1);
+
+    let entry = `${friendlyRole}: ${combined}`;
+    if (used + entry.length > limit) {
+      const remaining = limit - used;
+      if (remaining <= 20) {
+        break;
+      }
+      entry = entry.slice(0, remaining).trimEnd();
+      if (!entry) {
+        break;
+      }
+      entry += "…";
+    }
+
+    blocks.push(entry);
+    used += entry.length + 2;
+    turns += 1;
+
+    if (used >= limit) {
+      break;
+    }
+  }
+
+  return { context: blocks.join("\n\n"), turns };
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === "FETCH_CONTEXT") {
+    const conversationId = getConversationId();
+    const snapshot = collectConversationContext();
+    try {
+      sendResponse({
+        ok: true,
+        conversationId,
+        context: snapshot.context,
+        turns: snapshot.turns
+      });
+    } catch (error) {
+      console.warn(DEBUG_PREFIX, "failed to send context response", error);
+    }
+    return true;
+  }
+
   if (msg?.type === "FETCH_CURRENT_TEXT") {
     const target = findInput();
     let text = "";

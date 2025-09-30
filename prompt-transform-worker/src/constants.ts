@@ -1,0 +1,13 @@
+export const DEFAULT_MODEL = "deepseek-ai/deepseek-llm-7b-chat";
+export const CACHE_TTL_SECONDS = 60 * 60 * 24 * 15; // 15 days
+export const CACHE_CACHE_KEY_PREFIX = "https://promptgear-cache.internal/transform/";
+export const INITIAL_TIMEOUT_MS = 45_000;
+export const TIMEOUT_STEP_MS = 10_000;
+export const INITIAL_BACKOFF_MS = 400;
+export const MAX_BACKOFF_MS = 6_000;
+export const DEFAULT_LLM_ENDPOINT = "https://api.runpod.ai/v2/ihbvg6v91bekpk/run";
+export const OPENAI_CHAT_ENDPOINT = "https://api.openai.com/v1/chat/completions";
+export const NO_ORIGIN_TOKEN = "<no-origin>";
+export const DEBUG_PREFIX = "Prompt Transform Worker:";
+export const MAX_OPENAI_RETRIES = 2;
+export const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 524]);

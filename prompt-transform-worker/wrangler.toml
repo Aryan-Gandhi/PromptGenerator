@@ -4,7 +4,9 @@ compatibility_date = "2024-12-01"
 
 [vars]
 # Optional default model override; can be changed at deploy time.
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "deepseek-ai/deepseek-llm-7b-chat"
+# Endpoint for the self-hosted vLLM server (OpenAI-compatible API).
+LLM_ENDPOINT = "https://api.runpod.ai/v2/ihbvg6v91bekpk/openai/v1/chat/completions"
 # Comma separated; replace the placeholder extension ID with your published one.
 ALLOWED_ORIGINS = "chrome-extension://iilooaggclinecfibpfnfljipidjjbcd"
 

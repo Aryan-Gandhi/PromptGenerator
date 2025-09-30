@@ -26,9 +26,7 @@ export default function Popup() {
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState(
-    "Pulls in your ChatGPT draft automatically."
-  );
+  const [syncMessage, setSyncMessage] = useState("Click Sync to pull your ChatGPT draft.");
 
   const iconUrl = useMemo(() => {
     if (typeof chrome === "undefined" || !chrome.runtime?.getURL) {
@@ -45,87 +43,7 @@ export default function Popup() {
     }
   }, []);
 
-  const prefillFromChat = useCallback(
-    (options?: { quiet?: boolean; cancelled?: () => boolean }) => {
-      if (typeof chrome === "undefined" || !chrome.tabs?.query) {
-        setSyncMessage("Chrome permissions missing. Paste a prompt to begin.");
-        return Promise.resolve(false);
-      }
-
-      if (!options?.quiet) {
-        setIsSyncing(true);
-      }
-
-      return new Promise<boolean>((resolve) => {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (options?.cancelled?.()) {
-            resolve(false);
-            return;
-          }
-
-          const tabId = tabs[0]?.id;
-          if (!tabId) {
-            setSyncMessage("Open ChatGPT in this tab to sync the draft.");
-            resolve(false);
-            return;
-          }
-
-          chrome.tabs.sendMessage(
-            tabId,
-            { type: "FETCH_CURRENT_TEXT" },
-            (response: { ok?: boolean; text?: string } | undefined) => {
-              if (options?.cancelled?.()) {
-                resolve(false);
-                return;
-              }
-
-              const runtimeError = chrome.runtime.lastError;
-              if (runtimeError) {
-                console.warn(
-                  "Prompt Structurer: unable to fetch existing text",
-                  runtimeError
-                );
-                setSyncMessage("Reload ChatGPT then click Sync.");
-                resolve(false);
-                return;
-              }
-
-              const text = response?.text ?? "";
-              if (response?.ok && typeof text === "string" && text.trim()) {
-                setRaw((current) => (current ? current : text));
-                setSyncMessage("Prefilled from your ChatGPT draft.");
-                resolve(true);
-              } else {
-                setSyncMessage("Start fresh: type or paste a prompt below.");
-                resolve(false);
-              }
-            }
-          );
-        });
-      }).finally(() => {
-        if (!options?.quiet) {
-          setIsSyncing(false);
-        }
-      });
-    },
-    []
-  );
-
   useEffect(() => {
-    let cancelled = false;
-    prefillFromChat({ quiet: true, cancelled: () => cancelled }).catch(() => {
-      /* ignore initial sync errors */
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [prefillFromChat]);
-
-  useEffect(() => {
-    if (window.location.hash !== "#panel") {
-      return;
-    }
-
     const updateHeight = () => {
       const body = document.body;
       const html = document.documentElement;
@@ -153,6 +71,55 @@ export default function Popup() {
       window.removeEventListener("resize", updateHeight);
     };
   }, [raw, out, status, progressSteps, isTransforming, syncMessage, isSyncing]);
+
+  const prefillFromChat = useCallback(() => {
+    if (typeof chrome === "undefined" || !chrome.tabs?.query) {
+      setSyncMessage("Chrome permissions missing. Paste a prompt to begin.");
+      return Promise.resolve(false);
+    }
+
+    setIsSyncing(true);
+
+    return new Promise<boolean>((resolve) => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tabId = tabs[0]?.id;
+        if (!tabId) {
+          setSyncMessage("Open ChatGPT in this tab to sync the draft.");
+          setIsSyncing(false);
+          resolve(false);
+          return;
+        }
+
+        chrome.tabs.sendMessage(
+          tabId,
+          { type: "FETCH_CURRENT_TEXT" },
+          (response: { ok?: boolean; text?: string } | undefined) => {
+            const runtimeError = chrome.runtime.lastError;
+            if (runtimeError) {
+              console.warn("PromptGear: unable to fetch existing text", runtimeError);
+              setSyncMessage("Reload ChatGPT then click Sync.");
+              setIsSyncing(false);
+              resolve(false);
+              return;
+            }
+
+            const text = response?.text ?? "";
+            if (response?.ok && typeof text === "string" && text.trim()) {
+              setRaw(text);
+              setSyncMessage("Draft synced from ChatGPT.");
+              setIsSyncing(false);
+              resolve(true);
+              return;
+            }
+
+            setSyncMessage("No draft detected; type or paste a prompt below.");
+            setIsSyncing(false);
+            resolve(false);
+          }
+        );
+      });
+    });
+  }, []);
 
   const runTransform = useCallback(
     async (silent = false) => {
@@ -199,7 +166,9 @@ export default function Popup() {
           body: JSON.stringify({
             prompt: trimmed,
             mode: "universal",
-            model: DEFAULT_MODEL
+            model: DEFAULT_MODEL,
+            context: "",
+            conversationId: null
           })
         });
 
@@ -237,9 +206,7 @@ export default function Popup() {
           const model = data.model ?? DEFAULT_MODEL;
           const mockSuffix = data.mocked ? " (mock)" : "";
           setProgressSteps((steps) =>
-            steps.map((step) =>
-              step.id === "result" ? { ...step, state: "done" } : step
-            )
+            steps.map((step) => (step.id === "result" ? { ...step, state: "done" } : step))
           );
           setStatus({ tone: "success", message: `Transformed with ${model}${mockSuffix}.` });
         }

@@ -79,6 +79,23 @@ function setContentEditableValue(el: HTMLElement, value: string) {
   console.log(DEBUG_PREFIX, "setting contenteditable", el, value);
   el.focus({ preventScroll: true });
 
+  const preservedSiblings = Array.from(el.childNodes)
+    .filter((node) => {
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        return false;
+      }
+      const element = node as HTMLElement;
+      const testId = (element.getAttribute("data-testid") || "").toLowerCase();
+      if (testId.includes("attachment") || testId.includes("upload") || testId.includes("media")) {
+        return true;
+      }
+      if (element.querySelector('[data-testid*="attachment"]') || element.querySelector('[data-testid*="upload"]') || element.querySelector('[data-testid*="media"]')) {
+        return true;
+      }
+      return false;
+    })
+    .map((node) => ({ node, nextSibling: node.nextSibling }));
+
   const exec = (command: string, param?: string) => {
     const result = document.execCommand(command, false, param);
     console.log(DEBUG_PREFIX, "execCommand", command, result);
@@ -94,6 +111,16 @@ function setContentEditableValue(el: HTMLElement, value: string) {
       .map((line) => line === "" ? "<div><br></div>" : `<div>${line.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`)
       .join("");
   }
+
+  preservedSiblings.forEach(({ node, nextSibling }) => {
+    if (!node.isConnected) {
+      if (nextSibling && nextSibling.parentNode === el) {
+        el.insertBefore(node, nextSibling);
+      } else {
+        el.appendChild(node);
+      }
+    }
+  });
 
   const inputEvent = new InputEvent("input", {
     bubbles: true,

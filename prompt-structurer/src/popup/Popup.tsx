@@ -19,6 +19,57 @@ type ProgressStep = {
   state: ProgressState;
 };
 
+const encoder = new TextEncoder();
+
+function base64Encode(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+async function buildSignedHeaders(payload: unknown): Promise<Record<string, string>> {
+  const secret = import.meta.env.VITE_SIGNING_SECRET as string | undefined;
+  const clientId = (import.meta.env.VITE_CLIENT_ID as string | undefined) ?? "promptgear-extension";
+  const timestamp = Date.now().toString();
+  const bodyText = JSON.stringify(payload ?? {});
+
+  if (!secret) {
+    return {
+      "content-type": "application/json"
+    };
+  }
+
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const signatureBuffer = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      encoder.encode(`${timestamp}.${bodyText}`)
+    );
+    const signature = base64Encode(new Uint8Array(signatureBuffer));
+
+    return {
+      "content-type": "application/json",
+      "X-Promptgear-Timestamp": timestamp,
+      "X-Promptgear-Signature": signature,
+      "X-Promptgear-Client": clientId
+    };
+  } catch (error) {
+    console.warn("Prompt Structurer: failed to create signature", error);
+    return {
+      "content-type": "application/json"
+    };
+  }
+}
+
 function formatWithHumanContext(structured: string, original: string): string {
   const trimmedStructured = structured.trim();
   const trimmedOriginal = original.trim();
@@ -256,17 +307,17 @@ export default function Popup() {
         }
 
         const controller = abortControllerRef.current;
+        const requestPayload = {
+          prompt: payloadPrompt,
+          mode: "universal",
+          model: DEFAULT_MODEL
+        };
+        const headers = await buildSignedHeaders(requestPayload);
         const response = await fetch(TRANSFORM_ENDPOINT, {
           method: "POST",
-          headers: {
-            "content-type": "application/json"
-          },
+          headers,
           signal: controller?.signal,
-          body: JSON.stringify({
-            prompt: payloadPrompt,
-            mode: "universal",
-            model: DEFAULT_MODEL
-          })
+          body: JSON.stringify(requestPayload)
         });
 
         if (!silent) {
@@ -341,8 +392,11 @@ export default function Popup() {
                 : step
             )
           );
-          const message = error instanceof Error ? error.message : "LLM transform failed";
-          setStatus({ tone: "error", message: `${message}. Using rule-based fallback.` });
+          const readable = error instanceof Error ? error.message : "Call to GPT failed";
+          setStatus({
+            tone: "error",
+            message: `${readable}. Using offline fallback prompt instead.`
+          });
         }
         return finalFallback;
       } finally {

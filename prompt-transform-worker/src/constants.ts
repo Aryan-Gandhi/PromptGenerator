@@ -1,5 +1,5 @@
 export const DEFAULT_MODEL = "gpt-5-nano";
-export const CACHE_TTL_SECONDS = 60 * 60 * 24 * 15; // 15 days
+export const CACHE_TTL_SECONDS = 60 * 15; // 15 minutes
 export const CACHE_CACHE_KEY_PREFIX = "https://promptgear-cache.internal/transform/";
 export const INITIAL_TIMEOUT_MS = 25_000;
 export const TIMEOUT_STEP_MS = 5_000;
@@ -11,3 +11,7 @@ export const NO_ORIGIN_TOKEN = "<no-origin>";
 export const DEBUG_PREFIX = "Prompt Transform Worker:";
 export const MAX_OPENAI_RETRIES = 2;
 export const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 524]);
+export const SIGNATURE_TTL_MS = 2 * 60 * 1000;
+export const RATE_LIMIT_DEFAULT_MAX = 60;
+export const RATE_LIMIT_DEFAULT_WINDOW_SECONDS = 60;
+export const CACHE_IV_LENGTH = 12;

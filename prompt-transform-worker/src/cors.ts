@@ -52,7 +52,10 @@ export function withCorsHeaders(origin: string | null, init: ResponseInit = {}, 
   if (origin) {
     headers.set("Access-Control-Allow-Origin", origin);
   }
-  headers.set("Access-Control-Allow-Headers", "content-type, authorization");
+  headers.set(
+    "Access-Control-Allow-Headers",
+    "content-type, authorization, x-promptgear-signature, x-promptgear-timestamp, x-promptgear-client"
+  );
   headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (vary) {
     headers.append("Vary", "Origin");

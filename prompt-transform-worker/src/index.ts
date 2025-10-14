@@ -1,4 +1,8 @@
-import { DEBUG_PREFIX, DEFAULT_MODEL, RETRYABLE_STATUS } from "./constants";
+import {
+  DEBUG_PREFIX,
+  DEFAULT_MODEL,
+  RETRYABLE_STATUS
+} from "./constants";
 import {
   buildCacheKey,
   readCachedTransform,
@@ -21,6 +25,8 @@ import {
   recordFailure,
   recordSuccess
 } from "./health";
+import { authenticateRequest, AuthenticationError } from "./auth";
+import { checkRateLimit, logRateLimitRejection } from "./rate-limit";
 import type { Env, TransformBody } from "./types";
 
 function parseErrorBody(body: string): unknown {
@@ -66,9 +72,25 @@ export default {
       return jsonResponse({ error: "Origin not allowed" }, { status: 403 }, cors);
     }
 
+    const bodyText = await request.text();
+
+    let authContext: { clientId: string };
+    try {
+      authContext = await authenticateRequest(request, env, bodyText);
+    } catch (error) {
+      const status = error instanceof AuthenticationError ? error.status : 401;
+      const message = error instanceof Error ? error.message : "Unauthorized";
+      return jsonResponse({ error: message }, { status }, cors);
+    }
+
+    if (!checkRateLimit(authContext.clientId, env)) {
+      logRateLimitRejection(authContext.clientId);
+      return jsonResponse({ error: "Too many requests" }, { status: 429 }, cors);
+    }
+
     let body: TransformBody;
     try {
-      body = (await request.json()) as TransformBody;
+      body = bodyText ? (JSON.parse(bodyText) as TransformBody) : {};
     } catch (error) {
       return jsonResponse({ error: "Invalid JSON body" }, { status: 400 }, cors);
     }
@@ -97,31 +119,41 @@ export default {
 
     try {
       const contextSnippet = body.context?.trim() ?? "";
-      const cacheKey = await buildCacheKey(rawPrompt, contextSnippet, body.mode, model);
-      const cached = await readCachedTransform(cacheKey);
-      if (cached) {
-        recordSuccess();
-        return jsonResponse(
-          {
-            structuredPrompt: cached.structuredPrompt,
-            model: cached.model ?? model,
-            usage: { totalTokens: cached.usage ?? null },
-            cached: true,
-            contextIncluded: !!contextSnippet
-          },
-          {},
-          cors
-        );
+      const skipCache = body.skipCache === true;
+      const cacheKey = skipCache
+        ? null
+        : await buildCacheKey(rawPrompt, contextSnippet, body.mode, model);
+
+      if (cacheKey) {
+        const cached = await readCachedTransform(env, cacheKey);
+        if (cached) {
+          recordSuccess();
+          return jsonResponse(
+            {
+              structuredPrompt: cached.structuredPrompt,
+              model: cached.model ?? model,
+              usage: { totalTokens: cached.usage ?? null },
+              cached: true,
+              contextIncluded: !!contextSnippet
+            },
+            {},
+            cors
+          );
+        }
       }
 
       const result = await callLLM(rawPrompt, contextSnippet, body.mode, model, env);
-      await writeCachedTransform(cacheKey, {
-        structuredPrompt: result.structuredPrompt,
-        model,
-        usage: result.usage ?? null,
-        cachedAt: Date.now(),
-        conversationId: body.conversationId ?? null
-      });
+
+      if (cacheKey) {
+        await writeCachedTransform(env, cacheKey, {
+          structuredPrompt: result.structuredPrompt,
+          model,
+          usage: result.usage ?? null,
+          cachedAt: Date.now(),
+          conversationId: body.conversationId ?? null
+        });
+      }
+
       recordSuccess();
       return jsonResponse(
         {
@@ -145,7 +177,7 @@ export default {
         if (details && typeof details === "object" && "error" in (details as Record<string, unknown>)) {
           const extracted = (details as Record<string, any>).error;
           if (extracted && typeof extracted === "object") {
-            message = extracted.message ?? message;
+            message = typeof extracted.message === "string" ? extracted.message : message;
           }
         } else if (typeof details === "string" && details.trim().length > 0) {
           message = details;

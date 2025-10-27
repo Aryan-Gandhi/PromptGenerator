@@ -3,7 +3,7 @@ import { defineManifest } from "@crxjs/vite-plugin";
 export default defineManifest({
   manifest_version: 3,
   name: "PromptGear for ChatGPT",
-  version: "0.0.1",
+  version: "0.0.2",
   description: "Crafts structured prompts and drops them straight into ChatGPT.",
   icons: {
     16: "icons/logo-16.png",

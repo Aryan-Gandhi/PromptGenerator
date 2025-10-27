@@ -3,6 +3,7 @@ prompt-structurer/dist/
 prompt-structurer/PromptGenerator/
 prompt-structurer/PromptGenerator.zip
 .DS_Store
+Versioning/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

@@ -1,4 +1,8 @@
 node_modules/
+prompt-structurer/dist/
+prompt-structurer/PromptGenerator/
+prompt-structurer/PromptGenerator.zip
+.DS_Store
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
